@@ -62,7 +62,7 @@ class CAM(object):
         for i in range(len(pending)):
             if pending[i][0] == tid:
                 self.redis.lrem(part, 1, part_str[i])
-                return part_str[i]
+                return part_str[i].decode("utf-8")
 
     def get_by_tid(self, part, tid):
         part_str = self.redis.lrange(part, 0, -1)
@@ -83,7 +83,8 @@ class CAM(object):
         port = self.conf["port"] if port is None else port
         os.system("redis-server --port {0} --requirepass {1}".format(port, self.conf["password"]))
 
-    def client(self):
+    def worker(self):
+        log_info("Worker started. Listening to {0} ...".format(self.conf['server']))
         while True:
             cnt = self.redis.llen("pending")
             if cnt > 0:
@@ -124,7 +125,7 @@ class CAM(object):
         os.system("vim {0}".format(CONFIG_FILE))
 
     def kill(self, rid):
-        prow = self.get_by_tid(rid, "pending")
+        prow = self.get_by_tid("pending", rid)
         if prow is not None:
             log_warn("The task will be removed: \n", self.remove_by_tid("pending", rid))
         rrow = self.get_by_tid("running", rid)
