@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='cam-tool',
-    version='0.0.2',
+    version='0.0.5',
     description='Cloud Assignment Manager Tool',
     url='https://github.com/fuzihaofzh/cam-tool',
     author='',
