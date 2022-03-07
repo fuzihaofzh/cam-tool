@@ -11,6 +11,7 @@ import subprocess
 from tabulate import tabulate
 from pathlib import Path
 from subprocess import Popen, PIPE
+from _version import __version__
 import datetime
 HOME = str(Path.home())
 CONFIG_FILE = "{0}/.cam.conf".format(HOME)
@@ -50,6 +51,7 @@ def bash(cmd):
 
 class CAM(object):
     def __init__(self):
+        self.__version__ = __version__
         if not os.path.exists(CONFIG_FILE):
             open(CONFIG_FILE, "w").write(DEFAULT_CONF)
         self._conf = yaml.load(open(CONFIG_FILE).read(), yaml.FullLoader) 
@@ -100,6 +102,7 @@ class CAM(object):
         """
         Start the server.
         """
+        log_info("Server: ", self._conf['server'], ":", str(self._conf['port']), ' v', self.__version__)
         port = self._conf["port"] if port is None else port
         os.system("redis-server --port {0} --requirepass {1}".format(port, self._conf["password"]))
 
@@ -111,7 +114,9 @@ class CAM(object):
         <br>Has Free GPU\t: "bash('nvidia-smi').count(' 0MiB /') > 2"
         <br>Slurm job count\t: "int(bash('squeue -h -t pending,running -r | wc -l')) < 4"
         <br>Slurm node count\t: "bash('squeue').count('ltl-gpu')<4"
+        <br>`cam worker "some start condition" prefix suffix` will add prefix and suffix to the command.
         """
+        log_info("Server: ", self._conf['server'], ":", str(self._conf['port']), ' v', self.__version__)
         log_info("Worker started. Listening to {0} ...".format(self._conf['server']))
         worker_start_time = get_time()
         self.worker_id = get_host()
@@ -130,8 +135,10 @@ class CAM(object):
                 self.running_job_id, ptime, cmd, status = json.loads(row_str.decode("utf-8"))
                 cmd = "".join([cmdprefix, cmd, cmdsuffix])
                 self._redis.lpush("running", json.dumps([self.running_job_id, get_time(), cmd, get_host()]))
+                log_info("Running task: %d"%self.running_job_id)
                 log_info("Running command: ", cmd)
                 self.p = Popen(cmd, shell=True)
+                worker_start_time = get_time()
                 self._redis.hset("workers", self.worker_id, json.dumps([worker_start_time, "Running %d"%self.running_job_id, cond, cmdprefix, cmdsuffix]))
                 while True:
                     try:
@@ -164,13 +171,16 @@ class CAM(object):
             self._redis.rpush("pending", json.dumps([cnt, get_time(), cmd, "Pending"]))
         self._redis.set('jobid', cnt + 1)
 
-    def ls(self, type = None):
+    def ls(self, type = None, maxwidth = None):
         """
         Show the status of all tasks.
+        <br>`cam ls` will list both tasks and workers information.
+        <br>`cam ls worker 30` will list all workers wile each column has at most 30 chars.
+        <br>`cam ls task 30` will list all tasks wile each column has at most 30 chars.
         """
         now = datetime.datetime.now()
+        log_info("Server: ", self._conf['server'], ":", str(self._conf['port']), ' v', self.__version__)
         if type is None or type == "task":
-            log_info("Server: ", self._conf['server'])
             pending = self._redis.lrange("pending", 0, -1)
             running = self._redis.lrange("running", 0, -1)
             res = pending + running
@@ -179,6 +189,8 @@ class CAM(object):
                 data = json.loads(res[i].decode("utf-8"))
                 st = datetime.datetime.fromisoformat(data[1])
                 data[1] = str(now - st).split('.')[0]
+                if maxwidth is not None:
+                    data[2] = data[2][:maxwidth]
                 nres.append(data)
             print(table_list(nres, headers = ["ID", "Time", "Command", "Host/PID"]))
             print()
@@ -189,6 +201,8 @@ class CAM(object):
                 dt = json.loads(workers[w].decode("utf-8"))
                 st = datetime.datetime.fromisoformat(dt[0])
                 lst = [w, str(now - st).split('.')[0]] + dt[1:]
+                if maxwidth is not None and len(lst) > 3:
+                    lst[3] = lst[3][:maxwidth]
                 info.append(lst)    
             print(table_list(info, headers = ["Worker/PID", "Up Time", "Status", "cond", "prefix", "suffix"]))
 
