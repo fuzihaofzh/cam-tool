@@ -241,16 +241,16 @@ class CAM(object):
                 pending = get_lst("pending")
                 running = get_lst("running")
                 finished = get_lst("finished")[:3]
-                res = pending + running 
+                res = pending + running + finished
                 nres = []
                 for i in range(len(res)):
-                    data = res[i]
-                    st = datetime.datetime.fromisoformat(data[1])
-                    data[1] = time_diff(now, st)
+                    if i < len(pending + running):
+                        data = res[i]
+                        st = datetime.datetime.fromisoformat(data[1])
+                        data[1] = time_diff(now, st)
                     if maxwidth is not None:
                         data[2] = data[2][:maxwidth]
                     nres.append(data)
-                nres += finished
                 print(table_list(nres, headers = ["ID", "Time", "Command", "Host/PID"]))
                 print("Pending: ", len(pending), " Running: ", len(running), " Finished: ", len(finished))
             if type is None or type == "worker":
@@ -276,10 +276,7 @@ class CAM(object):
             if type == "finished":
                 nres = get_lst("finished")[::-1]
                 print(table_list(nres, headers = ["ID", "Time", "Command", "Host/PID", "FnishTime"]))
-                print("Total: ", len(nres))
-                
-
-                
+                print("Total: ", len(nres))  
         except:
             log_warn("Server Disconnected.")
 
