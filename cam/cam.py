@@ -10,6 +10,7 @@ import time
 import socket
 import subprocess
 import signal
+import psutil
 from tabulate import tabulate
 from pathlib import Path
 from subprocess import Popen, PIPE
@@ -65,6 +66,13 @@ def nsnode(*nodes):#Slurm Node Count
 def parse_json(data):
     return json.loads(data.decode("utf-8"))
 
+def kill_subs():
+    parent = psutil.Process(os.getpid())
+    for child in parent.children(recursive=True):
+        for i in range(3):
+            child.send_signal(signal.SIGINT)
+            time.sleep(0.3)
+
 class CAM(object):
     def __init__(self):
         self.__version__ = __version__
@@ -83,7 +91,8 @@ class CAM(object):
             try:
                 self.kill(self.running_job_id)
                 self._store_finished_task()
-                os.killpg(os.getpgid(self.p.pid), signal.SIGINT)
+                #os.killpg(os.getpgid(self.p.pid), signal.SIGKILL)
+                kill_subs()
                 #self.p.kill()
             except:
                 pass
@@ -181,7 +190,7 @@ class CAM(object):
                     self._redis.lpush("running", json.dumps([self.running_job_id, get_time(), cmd, get_host()]))
                     log_info("{0} Running task: {1}".format(self.worker_id, self.running_job_id))
                     log_info("{0} Running command: {1}".format(self.worker_id, cmd), )
-                    self.p = Popen(cmd, shell=True)
+                    self.p = Popen(cmd, shell=True)#preexec_fn=os.setsid
                     worker_start_time = get_time()
                     while True:
                         try:
@@ -190,12 +199,13 @@ class CAM(object):
                             taskinfo = taskinfo if tf is None else json.dumps(tf) 
                             self._set_by_tid("running", self.running_job_id, taskinfo)
                             if self._get_by_tid("running", self.running_job_id)[-1].startswith("KILLED"):
-                                os.killpg(os.getpgid(self.p.pid), signal.SIGINT)
-                                #self.p.kill()
+                                kill_subs()
+                                #parent.kill()
                                 log_warn("Task ", str(self.running_job_id), " has been killed.")
                                 break
-                        except:
-                            log_warn("Server Disconnected.")
+                        except Exception as e:
+                            log_warn("ERROR:")
+                            print(e)
                             self.server_disconnected = True
                             time.sleep(10)
                         try:
@@ -206,8 +216,9 @@ class CAM(object):
                     log_info("{0} Finished command: {1}".format(self.worker_id, cmd))
                     self._store_finished_task()
                     delattr(self, "server_disconnected")
-            except:
-                log_warn("Server Disconnected.")
+            except Exception as e:
+                log_warn("ERROR:")
+                print(e)
                 self.server_disconnected = True
             time.sleep(5)
             
@@ -244,8 +255,8 @@ class CAM(object):
                 res = pending + running + finished
                 nres = []
                 for i in range(len(res)):
+                    data = res[i]
                     if i < len(pending + running):
-                        data = res[i]
                         st = datetime.datetime.fromisoformat(data[1])
                         data[1] = time_diff(now, st)
                     if maxwidth is not None:

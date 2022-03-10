@@ -20,7 +20,7 @@ setup(
     keywords='Cloud Assignment Manager',
     packages=find_packages(),
     install_requires=[
-          'fire', 'pyyaml', 'redis', 'tabulate', 'GPUtil'
+          'fire', 'pyyaml', 'redis', 'tabulate', 'GPUtil', 'psutil'
     ],
     entry_points={
           'console_scripts': [
