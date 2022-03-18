@@ -26,11 +26,14 @@ password: 0a8148539c426d7c008433172230b551
 def get_time():
     return str(datetime.datetime.utcnow()).split('.')[0]
 
-def get_host():
-    return socket.gethostname().split('.', 1)[0] + " " + str(os.getpid())
+def get_node_name():
+    return get_host_name() + " " + str(os.getpid())
+
+def get_host_name():
+    return socket.gethostname().split('.', 1)[0]
 
 def time_diff(now, st):
-    return str(now - st).split('.')[0].replace(' day, ', '-')
+    return str(now - st).split('.')[0].replace(' day, ', '-').replace(' days, ', '-')
 
 def table_list(data, headers = None):
     return tabulate(data, headers = headers, tablefmt="plain")
@@ -144,8 +147,20 @@ class CAM(object):
         data.append(get_time())
         self._set_by_tid("finished", self.running_job_id, json.dumps(data))
         self._remove_by_tid("running", self.running_job_id)
-        
 
+    def _set_host_lock(self):
+        self._redis.hset("worker_lock", get_host_name(), get_time())
+
+    def _check_host_lock(self, wait = 5):
+        dt = self._redis.hget("worker_lock", get_host_name())
+        if dt is not None:
+            now = datetime.datetime.utcnow()
+            dt = datetime.datetime.fromisoformat(dt.decode('utf-8'))
+            if (now - dt).seconds < wait:
+                return True
+        return False
+            
+        
     def server(self, port = None):
         """
         Start the server.
@@ -154,7 +169,7 @@ class CAM(object):
         port = self._conf["port"] if port is None else port
         os.system("redis-server --port {0} --requirepass {1}".format(port, self._conf["password"]))
 
-    def worker(self, cond = "", cmdprefix = "", cmdsuffix = ""):
+    def worker(self, cond = "", cmdprefix = "", cmdsuffix = "", wait = 90):
         """
          Start the worker. 
         <br>`cam worker "some start condition"`
@@ -166,9 +181,9 @@ class CAM(object):
         <br>Also use\t: "nsnode("node1", "node2") < 2"
         <br>`cam worker "some start condition" prefix suffix` will add prefix and suffix to the command.
         """
-        log_info("Worker {0} started.".format(get_host()))
+        log_info("Worker {0} started.".format(get_node_name()))
         worker_start_time = get_time()
-        self.worker_id = get_host()
+        self.worker_id = get_node_name()
         os.system("tmux rename-window cam%d"%os.getpid())
         while True:
             try:
@@ -178,16 +193,20 @@ class CAM(object):
                     log_info("Server Connected.")
                     log_info(" ".join(["Server:", self._conf['server']+":"+str(self._conf['port']), ' v'+self.__version__, cond, cmdprefix, cmdsuffix]))
                 if not self._condition_parse(cond):
-                    self._redis.hset("workers", self.worker_id, json.dumps([worker_start_time, "Wait Resource", cond, cmdprefix, cmdsuffix]))                
+                    self._redis.hset("workers", self.worker_id, json.dumps([worker_start_time, "Wait Resource", cond, cmdprefix, cmdsuffix]))  
+                elif self._check_host_lock(wait): 
+                    self._redis.hset("workers", self.worker_id, json.dumps([worker_start_time, "Wait Lock", cond, cmdprefix, cmdsuffix])) 
                 elif cnt <= 0:
                     self._redis.hset("workers", self.worker_id, json.dumps([worker_start_time, "Wait Task", cond, cmdprefix, cmdsuffix]))
                 else:
+                    self._set_host_lock()
                     row_str = self._redis.rpop("pending")
                     if row_str is None:
                         continue
                     self.running_job_id, ptime, cmd, status = parse_json(row_str)
                     cmd = "".join([cmdprefix, cmd, cmdsuffix])
-                    self._redis.lpush("running", json.dumps([self.running_job_id, get_time(), cmd, get_host()]))
+                    taskinfo = json.dumps([self.running_job_id, get_time(), cmd, get_node_name()])
+                    self._redis.lpush("running", taskinfo)
                     log_info("{0} Running task: {1}".format(self.worker_id, self.running_job_id))
                     log_info("{0} Running command: {1}".format(self.worker_id, cmd), )
                     self.p = Popen(cmd, shell=True)#preexec_fn=os.setsid
@@ -251,8 +270,8 @@ class CAM(object):
             if type is None or type == "task":
                 pending = get_lst("pending")
                 running = get_lst("running")
-                finished = get_lst("finished")[:3]
-                res = pending + running + finished
+                finished = get_lst("finished")
+                res = pending + running + finished[:3]
                 nres = []
                 for i in range(len(res)):
                     data = res[i]
@@ -262,8 +281,8 @@ class CAM(object):
                     if maxwidth is not None:
                         data[2] = data[2][:maxwidth]
                     nres.append(data)
-                print(table_list(nres, headers = ["ID", "Time", "Command", "Host/PID"]))
                 print("Pending: ", len(pending), " Running: ", len(running), " Finished: ", len(finished))
+                print(table_list(nres, headers = ["ID", "Time", "Command", "Host/PID"]))
             if type is None or type == "worker":
                 workers = self._redis.hgetall("workers")
                 info = []
@@ -275,8 +294,7 @@ class CAM(object):
                         lst[3] = lst[3][:maxwidth]
                     info.append(lst)
                 info = sorted(info, key=lambda x: x[0])
-                print(table_list(info, headers = ["Worker/PID", "Up Time", "Status", "cond", "prefix", "suffix"]))
-                status = {"Wait Resource": 0, "Wait Task": 0, "Running": 0}
+                status = {"Wait Resource": 0, "Wait Task": 0, "Wait Lock": 0, "Running": 0}
                 for ir in info:
                     if ir[2].startswith("Running"):
                         status["Running"] += 1
@@ -284,12 +302,16 @@ class CAM(object):
                         status[ir[2]] += 1
                 for k in status:
                     print("{0} : {1}; ".format(k, status[k]), end="")
+                print("")
+                print(table_list(info, headers = ["Worker/PID", "Up Time", "Status", "cond", "prefix", "suffix"]))
             if type == "finished":
                 nres = get_lst("finished")[::-1]
                 print(table_list(nres, headers = ["ID", "Time", "Command", "Host/PID", "FnishTime"]))
                 print("Total: ", len(nres))  
-        except:
-            log_warn("Server Disconnected.")
+        except Exception as e:
+            log_warn("Error:")
+            print(exit)
+            
 
     def config(self):
         """
