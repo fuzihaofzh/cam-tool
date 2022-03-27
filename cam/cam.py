@@ -17,6 +17,8 @@ from pathlib import Path
 from subprocess import Popen, PIPE
 from cam.version import __version__
 import datetime
+import errno
+import functools
 HOME = str(Path.home())
 CONFIG_FILE = "{0}/.cam.conf".format(HOME)
 DEFAULT_CONF="""server: 127.0.0.1
@@ -48,7 +50,7 @@ def _log(info, color):
     "blue" : csi + '34m'
     }
     end = csi + '0m'
-    print("{0}[CAM {1}] {2} ".format(colors[color], get_time(), end), info)
+    print("{0}[CAM {1}] {2} ".format(colors[color], get_time()[2:], end), info)
 
 def log_info(*args):
     _log("".join([str(a) for a in args]), "blue")
@@ -91,14 +93,6 @@ def run_cmd(cmd, log_queue):
         return 
 
 
-class UserStdout(object):
-    def __init__(self):
-        self.terminal = sys.stdout
-        self._log = ""
-
-    def write(self, message):
-        self.terminal.write(message)
-        self._log += message
 
 class CAM(object):
     def __init__(self):
@@ -117,7 +111,7 @@ class CAM(object):
         kill_subs()  
 
     def _log_sys_info(self):
-        log_info("Server: ", self._conf['server'], ":", str(self._conf['port']), ' v', self.__version__)           
+        log_info("Server: ", self._conf['server'], ":", str(self._conf['port']), ' v', self.__version__, " node: ", get_node_name())           
 
     def _condition_parse(self, cond):
         #e.g.:
@@ -145,7 +139,8 @@ class CAM(object):
             if channel not in self._channels or not self._channels[channel].subscribed:
                 self._channels[channel] = self._redis.pubsub()
                 self._channels[channel].subscribe(channel)
-            msg = self._channels[channel].get_message()
+            msg = self._channels[channel].get_message(timeout=5.0)
+            log_info(msg)
             msg = msg['data'] if msg is not None and 'data' in msg and type(msg['data']) is bytes else None
             if self._server_fails:
                 self._log_sys_info()
@@ -171,20 +166,19 @@ class CAM(object):
         return msg
 
     def _server_handle_tick(self):
-        for node in self.node_list:
+        for node in list(self.node_list.keys()):
             if get_seconds_passed(self.node_list[node]['time']) > 60:
                 del self.node_list[node]
         for task_id, task in self.task_pending.items():
-            if 'assigned_time' in task:
-                continue
             for nid, node in self.node_list.items():
                 #print(task_id, task, nid, node)
-                if task['host'] is None or node['host'] in task['host']:
+                if (task['host'] is None or node['host'] in task['host']) and node['status'] in ['IDLE', 'FINISHED']:
                     msg = self._make_server_msg(type = "RUN", cmd = task['cmd'], task_id = task_id)
                     self._publish("to_%s"%nid, msg)
                     task['assigned_time'] = get_time()
                     log_info("Assign task %d to node %s."%(task_id, nid))
                     log_info(str(msg))
+                    break
         for lst in [self.task_pending, self.task_running]:
             for task_id, task in lst.items():
                 if task['status'] == 'KILLED':
@@ -194,6 +188,7 @@ class CAM(object):
     def _server_handle_message(self, msg):
         if msg is None:
             return
+        log_info(msg)
         if msg['type'] == 'ADD':
             self.task_pending[self.task_cnt] = msg
             self.task_pending[self.task_cnt]['task_id'] = self.task_cnt
@@ -210,9 +205,10 @@ class CAM(object):
                     log_info("Killing running task %d ." % tid)
                     msg = self._make_server_msg(type = "KILL", task_id = tid)
                     self._publish("to_%s"%task['node'], msg)
-        elif msg['type'] == 'WORKER_TASK_KILL':
+        elif msg['type'] == 'WORKER_TASK_KILLED':
+            log_info("Task %d has been killed successfully." % msg['task_id'])
             if msg['task_id'] in self.task_running:
-                self.task_running[msg['task_id']] = 'KILLED'
+                self.task_running[msg['task_id']]['status'] = 'KILLED'
         elif msg['type'] == 'STDOUT':
             if msg['task_id'] in self.task_running:
                 log_info("Get stdout of task %d"%msg['task_id'])
@@ -222,7 +218,12 @@ class CAM(object):
             log_info("Receive stdout of task %s"%msg['node'])
             self._publish("to_%s"%self.ask_node[msg['node']], self._make_server_msg(type = "STDOUT_RES", stdout_res = msg['stdout_res']))
         elif msg['type'] == 'GET_STATUS':
-            self._publish("to_%s"%msg['node'], self._make_server_msg(type = "SERVER_STATUS", status = {"running" : dict(self.task_running), "pending" : dict(self.task_pending), "finished" : dict(self.task_finished), "nodes" : self.node_list}))
+            log_info("Receive GET_STATUS request.")
+            status = self._make_server_msg(type = "SERVER_STATUS", status = {"running" : dict(self.task_running), "pending" : dict(self.task_pending), "finished" : dict(self.task_finished), "nodes" : dict(self.node_list)})
+            self._publish("to_%s"%msg['node'], status)
+            log_info(status)
+            log_info("to_%s"%msg['node'])
+            log_info("STATUS sent.")
         elif msg['type'] == 'STATUS':
             self.node_list[msg['node']] = msg
             if msg['status'] == 'RUNNING':
@@ -233,6 +234,7 @@ class CAM(object):
                 if msg['task_id'] in self.task_running:
                     self.task_finished[msg['task_id']] = self.task_running[msg['task_id']]
                     self.task_finished[msg['task_id']]['finish_time'] = msg['time']
+                    self.task_finished[msg['task_id']]['status'] = "FINISHED"
                     del self.task_running[msg['task_id']]
                     log_info("Task %d finished."%(msg['task_id']))
                     log_info(str(msg))
@@ -255,7 +257,6 @@ class CAM(object):
         self.task_cnt = 0
         self._log_sys_info()
         while True:
-            time.sleep(0.1)
             self._server_handle_tick()
             msg = self._get_message("to_server")
             self._server_handle_message(msg)
@@ -264,17 +265,18 @@ class CAM(object):
     def worker(self):
         self._log_sys_info()
         self._status['status'] = "IDLE"
+        self.tick_time = datetime.datetime.utcnow()
         #self.userout = UserStdout()
         #sys.stdout = self.userout
         #sys.stderr = self.userout
         while True:
-            time.sleep(0.1)  
+            msg = self._get_message("to_%s"%get_node_name())
             self._publish("to_server", self._make_worker_msg())
             if self._status['status'] == "RUNNING":
                 if not self.p.is_alive():
                     self._status['end_time'] = get_time()
                     self._status['status'] = "FINISHED"
-            msg = self._get_message("to_%s"%get_node_name())
+                    self._log_sys_info()
             if msg is not None:
                 log_info(msg)
             if msg is None:
@@ -290,12 +292,13 @@ class CAM(object):
                 self._status['node'] = get_node_name()
             elif msg['type'] == "KILL":
                 if self._status['task_id'] == msg['task_id']:
-                    log_info("Killing running task %d ." % self._status['task_id'])
+                    log_warn("Killing running task %d ." % self._status['task_id'])
                     self._status['status'] = "KILLING"
                     self._publish("to_server", self._make_worker_msg())
                     kill_subs()
                     log_warn("Task ", str(msg['task_id']), " has been killed.")
-                    self._publish("to_server", self._make_worker_msg(status = 'WORKER_TASK_KILLED', task_id = self._status['task_id']))
+                    log_info(msg)
+                    self._publish("to_server", self._make_worker_msg(type = 'WORKER_TASK_KILLED', task_id = self._status['task_id']))
                     self._status = {"status" : "IDLE"}
             elif msg['type'] == "REPORT":
                 res = eval(msg['cmd'])
@@ -321,6 +324,7 @@ class CAM(object):
         print(msg['stdout_res'])
 
     def ls(self):
+        self._log_sys_info()
         self._publish("to_server", self._make_worker_msg(type = 'GET_STATUS', host = None))
         msg = self._get_message("to_%s"%get_node_name())
         while msg is None:
