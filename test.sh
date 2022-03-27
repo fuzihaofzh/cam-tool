@@ -1,1 +1,1 @@
-python test_task.py
+python -u test_task.py
