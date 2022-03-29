@@ -85,7 +85,7 @@ def kill_subs():
 
 def run_cmd(cmd, log_queue):
     try:
-        proc = Popen(cmd, shell=True, stdout = PIPE, stderr=PIPE, bufsize=0)
+        proc = Popen(cmd, shell=True, stdout = PIPE, stderr=subprocess.STDOUT, bufsize=0)
         for content in proc.stdout:
             content = content.decode("utf-8")
             print(content, end = "")
