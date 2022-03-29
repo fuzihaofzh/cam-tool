@@ -24,9 +24,6 @@ CONFIG_FILE = "{0}/.cam.conf".format(HOME)
 DEFAULT_CONF="""server: 127.0.0.1
 port: 3857
 password: 0a8148539c426d7c008433172230b551
-prefix: ""   # Will add this prefix ahead of commands to worker
-resource: 1  # This can be functions to get GPU count etc. e.g. directly call function "ngpu()"
-priority: 10 # Higher is better
 host_lock_time: 60
 """
 
@@ -154,7 +151,7 @@ class CAM(object):
                 self._server_fails = True
 
     def _make_worker_msg(self, **kwargs):
-        msg = {"type" : "STATUS", "node" : get_node_name(), "host" : get_host_name(), "time": get_time(), "pwd" : os.getcwd(), "priority": self._conf['priority'], "resource": 1, "version": self.__version__}
+        msg = {"type" : "STATUS", "node" : get_node_name(), "host" : get_host_name(), "time": get_time(), "pwd" : os.getcwd(), "resource": 1, "version": self.__version__}
         for k in self._status:
             kwargs[k] = self._status[k]
         msg.update(kwargs)
@@ -184,7 +181,7 @@ class CAM(object):
             for node in nodes:
                 nid = node['node']
                 #print(task_id, task, nid, node)
-                if (task['host'] is None or node['host'] in task['host']) and node['status'] in ['IDLE', 'FINISHED']:
+                if ('runhost' not in task or task['runhost'] is None or (node['host'] in task['runhost'])) and node['status'] in ['IDLE', 'FINISHED']:
                     msg = self._make_server_msg(type = "RUN", cmd = task['cmd'], task_id = task_id)
                     self._publish("to_%s"%nid, msg)
                     task['assigned_time'] = get_time()
@@ -277,10 +274,15 @@ class CAM(object):
             self._server_handle_message(msg)
             
             
-    def worker(self):
+    def worker(self, resource=1, prefix="", priority=10, suffix = "", server = None, port = None):
         self._log_sys_info()
         self._status['status'] = "IDLE"
         self.tick_time = datetime.datetime.utcnow()
+        self._status['priority'] = priority
+        self._conf['server'] = server if server is not None else self._conf['server']
+        self._conf['port'] = port if port is not None else self._conf['port']
+        if server is not None or port is not None:
+            self._redis = redis.StrictRedis(host=self._conf["server"], port=self._conf["port"], password=self._conf["password"], db=0, encoding="utf-8")
         #self.userout = UserStdout()
         #sys.stdout = self.userout
         #sys.stderr = self.userout
@@ -297,7 +299,7 @@ class CAM(object):
                         self._log[self._status['task_id']] += txt
                     self._log_sys_info()
             else:
-                self._status['resource'] = self._condition_parse(self._conf['resource'])
+                self._status['resource'] = self._condition_parse(resource)
                 if self._status['resource'] == 0:
                     self._status['status'] = "WAIT RESOURCE"
             if msg is not None:
@@ -307,7 +309,7 @@ class CAM(object):
             elif msg['type'] == "RUN" and self._status['status'] != "RUNNING":
                 #self.p = Popen(msg['cmd'], shell=True, stdout = PIPE, stderr=PIPE, bufsize=0)
                 self._log_queue[msg['task_id']] = multiprocessing.Queue()
-                self.p = multiprocessing.Process(target = run_cmd, args = (self._conf['prefix'] + msg['cmd'], self._log_queue[msg['task_id']]))
+                self.p = multiprocessing.Process(target = run_cmd, args = (prefix + msg['cmd'] + suffix, self._log_queue[msg['task_id']]))
                 self.p.start()
                 self._status['status'] = "RUNNING"
                 self._status['cmd'] = msg['cmd']
