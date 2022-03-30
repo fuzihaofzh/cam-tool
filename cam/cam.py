@@ -110,7 +110,8 @@ class CAM(object):
         self._host_lock = {}
 
     def __del__(self):
-        kill_subs()  
+        kill_subs()
+        self._redis.hdel("node_list", get_node_name())
 
     def _log_sys_info(self):
         log_info("Server: ", self._conf['server'], ":", str(self._conf['port']), ' v', self.__version__, " node: ", get_node_name())           
@@ -124,137 +125,7 @@ class CAM(object):
             return True
         else:
             return eval(str(cond))
-    """
-    def _publish(self, channel, msg):
-        try:
-            self._redis.lpush(channel, json.dumps(msg))
-            #self._redis.publish(channel, json.dumps(msg))
-            if self._server_fails:
-                self._log_sys_info()
-                self._server_fails = False
-        except Exception as e:
-            if not self._server_fails:
-                log_warn(e)
-                self._server_fails = True
-
-    def _get_message(self, channel):
-        try:
-            msg = self._redis.brpop(channel, timeout = 5)
-            msg = msg[1] if msg is not None else msg
-            if self._server_fails:
-                self._log_sys_info()
-                self._server_fails = False
-            return json.loads(msg) if msg is not None else None
-        except Exception as e:
-            if not self._server_fails:
-                log_warn(e)
-                self._server_fails = True
     
-
-    def _make_worker_msg(self, **kwargs):
-        msg = {"type" : "STATUS", "node" : get_node_name(), "host" : get_host_name(), "time": get_time(), "pwd" : os.getcwd(), "resource": 1, "version": self.__version__}
-        for k in self._status:
-            kwargs[k] = self._status[k]
-        msg.update(kwargs)
-        return msg
-
-    def _make_server_msg(self, **kwargs):
-        msg = {"time": get_time()}
-        for k in self._status:
-            kwargs[k] = self._status[k]
-        msg.update(kwargs)
-        return msg
-    
-    def _server_handle_tick(self):
-        for node in list(self.node_list.keys()):
-            if 300 > get_seconds_passed(self.node_list[node]['time']) > 60:
-                self.node_list[node]['status'] = "DISCONNECTED"
-            elif get_seconds_passed(self.node_list[node]['time']) > 300:
-                del self.node_list[node]
-        for task in list(self.task_running.keys()):
-            if get_seconds_passed(self.task_running[task]['time']) > 60:
-                self.task_running[task]['status'] = "DISCONNECTED"
-                self.task_finished[task] = self.task_running[task]
-                del self.task_running[task]
-        for task_id, task in self.task_pending.items():
-            nodes = sorted(self.node_list.values(), key=lambda x: -x['priority'])
-            nodes = [n for n in nodes if (n['host'] not in self._host_lock or (time.time() - self._host_lock[n['host']] > self._conf['host_lock_time'])) and n['resource'] > 0]
-            for node in nodes:
-                nid = node['node']
-                #print(task_id, task, nid, node)
-                if ('runhost' not in task or task['runhost'] is None or (node['host'] in task['runhost'])) and node['status'] in ['IDLE', 'FINISHED']:
-                    msg = self._make_server_msg(type = "RUN", cmd = task['cmd'], task_id = task_id)
-                    self._publish("to_%s"%nid, msg)
-                    task['assigned_time'] = get_time()
-                    log_info("Assign task %d to node %s."%(task_id, nid))
-                    log_info(str(msg))
-                    self._host_lock[node['host']] = time.time()
-                    break
-        for lst in [self.task_pending, self.task_running]:
-            for task_id, task in lst.items():
-                if task['status'] == 'KILLED':
-                    self.task_finished[task_id] = task
-                    del lst[task_id]
-
-    def _server_handle_message(self, msg):
-        if msg is None:
-            return
-        log_info(msg)
-        if msg['type'] == 'ADD':
-            self.task_pending[self.task_cnt] = msg
-            self.task_pending[self.task_cnt]['task_id'] = self.task_cnt
-            self.task_pending[self.task_cnt]['status'] = "PENDING"
-            log_info("Add new task: ", str(self.task_pending[self.task_cnt]))
-            self.task_cnt += 1
-        elif msg['type'] == 'KILL':
-            for tid, task in self.task_pending.items():
-                if tid == msg['task_id']:
-                    log_info("Remove task %d in pending list." % tid)
-                    task['status'] = "KILLED"
-            for tid, task in self.task_running.items():
-                if tid == msg['task_id']:
-                    log_info("Killing running task %d ." % tid)
-                    msg = self._make_server_msg(type = "KILL", task_id = tid)
-                    self._publish("to_%s"%task['node'], msg)
-        elif msg['type'] == 'WORKER_TASK_KILLED':
-            log_info("Task %d has been killed successfully." % msg['task_id'])
-            if msg['task_id'] in self.task_running:
-                self.task_running[msg['task_id']]['status'] = 'KILLED'
-        elif msg['type'] == 'STDOUT':
-            log_info(msg, self.task_running)
-            for lst in [self.task_running, self.task_finished]:
-                if msg['task_id'] in lst:
-                    log_info("Get stdout of task %d"%msg['task_id'])
-                    self._publish("to_%s"%lst[msg['task_id']]['node'], self._make_server_msg(type = "STDOUT", task_id = msg['task_id']))
-                    self.ask_node[lst[msg['task_id']]['node']] = msg['node']
-        elif msg['type'] == 'STDOUT_RES':
-            log_info("Receive stdout of task %s. Send it to %s"%(msg['node'], self.ask_node[msg['node']]))
-            self._publish("to_%s"%self.ask_node[msg['node']], self._make_server_msg(type = "STDOUT_RES", stdout_res = msg['stdout_res']))
-        elif msg['type'] == 'GET_STATUS':
-            log_info("Receive GET_STATUS request.")
-            status = self._make_server_msg(type = "SERVER_STATUS", status = {"running" : dict(self.task_running), "pending" : dict(self.task_pending), "finished" : dict(self.task_finished), "nodes" : dict(self.node_list)})
-            self._publish("to_%s"%msg['node'], status)
-            log_info(status)
-            log_info("to_%s"%msg['node'])
-            log_info("STATUS sent.")
-        elif msg['type'] == 'STATUS':
-            self.node_list[msg['node']] = msg
-            if msg['status'] == 'RUNNING':
-                if msg['task_id'] in self.task_pending:
-                    del self.task_pending[msg['task_id']]
-                self.task_running[msg['task_id']] = msg
-            if msg['status'] == 'FINISHED':
-                if msg['task_id'] in self.task_running:
-                    self.task_finished[msg['task_id']] = self.task_running[msg['task_id']]
-                    self.task_finished[msg['task_id']]['finish_time'] = msg['time']
-                    self.task_finished[msg['task_id']]['status'] = "FINISHED"
-                    del self.task_running[msg['task_id']]
-                    log_info("Task %d finished."%(msg['task_id']))
-                    log_info(str(msg))
-            elif msg['status'] == 'IDLE':
-                #self._publish("to_%s"%msg['node'], self._make_server_msg(type = "RUN", cmd = "./test.sh", task_id = 0))
-                pass
-    """    
     def server(self, port = None, password = None):
         """
         Start the server.
@@ -264,17 +135,6 @@ class CAM(object):
         port = self._conf["port"] if port is None else port
         self._log_sys_info()
         os.system("redis-server --port {0} --requirepass {1}".format(port, self._conf["password"]))
-        """self.task_pending = collections.OrderedDict()
-        self.task_running = collections.OrderedDict()
-        self.task_finished = collections.OrderedDict()
-        self.node_list = collections.OrderedDict()
-        self.ask_node = {}
-        self.task_cnt = 0
-        self._log_sys_info()
-        while True:
-            self._server_handle_tick()
-            msg = self._get_message("to_server")
-            self._server_handle_message(msg)"""
             
     def _hset(self, var_name, key_name, dct):
         self._redis.hset(var_name, key_name, json.dumps(dct))
@@ -299,7 +159,7 @@ class CAM(object):
         dt = self._redis.hget("worker_lock", get_host_name())
         if dt is not None:
             now = datetime.datetime.utcnow()
-            dt = datetime.datetime.fromisoformat(dt.decode('utf-8'))
+            dt = datetime.datetime.fromisoformat(dt)
             if (now - dt).seconds < wait:
                 return True
         return False
@@ -315,6 +175,12 @@ class CAM(object):
         else:
             self._node_status['node_status'] = "IDLE"
         self._node_status['timestamp'] = get_time()
+        node_list = self._get_hlist("node_list")
+        now = datetime.datetime.utcnow()
+        for node in node_list:
+            dt = datetime.datetime.fromisoformat(node_list[node]['timestamp'])
+            if (now - dt).seconds > 60:
+                self._redis.hdel("node_list", node)
         self._hset("node_list", get_node_name(), self._node_status)
 
     def _get_hlist(self, hname):
@@ -336,15 +202,19 @@ class CAM(object):
                 prior = [e for e in node_list if node_list[e]["node_status"] in ["IDLE", "FINISHED"] and node_list[e]["priority"] > self._node_status["priority"]]
                 if len(prior) > 0:
                     return None
-                return {"type" : "RUN", "task" : json.loads(self._redis.rpop("task_pending"))}
+                task = self._redis.rpop("task_pending")
+                if task is None:
+                    return None
+                task = json.loads(task)
+                return {"type" : "RUN", "task" : task}
             if self._server_fails:
                 self._log_sys_info()
                 log_info("Connection Recovered!")
                 self._server_fails = False
         except Exception as e:
             if not self._server_fails:
-                log_warn(e)
                 traceback.print_exc()
+                log_warn(e)
                 self._server_fails = True
             return None
 
@@ -366,7 +236,7 @@ class CAM(object):
         if server is not None or port is not None:
             self._redis = redis.StrictRedis(host=self._conf["server"], port=self._conf["port"], password=self._conf["password"], db=0, encoding="utf-8")
         self._log_sys_info()
-        self._node_status = {"node" : get_node_name(), "host" : get_host_name(), "priority" : priority, "prefix": prefix, "suffix": suffix, "node_status" : "IDLE", "host_lock_time" : host_lock_time}
+        self._node_status = {"node" : get_node_name(), "host" : get_host_name(), "priority" : priority, "prefix": prefix, "suffix": suffix, "node_status" : "IDLE", "host_lock_time" : host_lock_time, "start_time": get_time()}
         self._redis.config_set("notify-keyspace-events", "KEA")
         self._watcher = self._redis.pubsub()
         self._watcher.subscribe(["__keyspace@0__:task_pending", f"__keyspace@0__:to_{get_node_name()}"])
@@ -377,7 +247,10 @@ class CAM(object):
             if self._node_status['node_status'] == "RUNNING":
                 if not self.p.is_alive():
                     self._node_status['task']['end_time'] = get_time()
+                    self._node_status['task']['status'] = "FINISHED"
                     self._node_status['node_status'] = "FINISHED"
+                    self._hset("task_finished", self._node_status['task']['task_id'], self._node_status['task'])
+                    self._redis.hdel("task_running", self._node_status['task']['task_id'])
                     self._update_node_status()
                     txt = ""
                     while not self._log_queue[self._node_status['task']['task_id']].empty():
@@ -399,6 +272,7 @@ class CAM(object):
                 task_status['task_id'] = task['task_id']
                 task_status['node'] = get_node_name()
                 task_status['host'] = get_host_name()
+                task_status['status'] = "RUNNING"
                 self._node_status['node_status'] = "RUNNING"
                 self._node_status['task'] = task_status
                 self._redis.hset('task_running', task_status['task_id'], json.dumps(task_status))
@@ -431,82 +305,6 @@ class CAM(object):
                     txt = '\n'.join(lines[:maxlen//2]) + "\n\n..........\n\n" + '\n'.join(lines[-maxlen//2:])
                 self._redis.hset("task_log", msg['task_id'], txt)
 
-
-
-    """
-    def worker_v1(self, resource=1, prefix="", priority=10, suffix = "", server = None, port = None):
-        self._log_sys_info()
-        self._status['status'] = "IDLE"
-        self.tick_time = datetime.datetime.utcnow()
-        self._status['priority'] = priority
-        self._conf['server'] = server if server is not None else self._conf['server']
-        self._conf['port'] = port if port is not None else self._conf['port']
-        if server is not None or port is not None:
-            self._redis = redis.StrictRedis(host=self._conf["server"], port=self._conf["port"], password=self._conf["password"], db=0, encoding="utf-8")
-        #self.userout = UserStdout()
-        #sys.stdout = self.userout
-        #sys.stderr = self.userout
-        while True:
-            msg = self._get_message("to_%s"%get_node_name())
-            self._publish("to_server", self._make_worker_msg())
-            if self._status['status'] == "RUNNING":
-                if not self.p.is_alive():
-                    self._status['end_time'] = get_time()
-                    self._status['status'] = "FINISHED"
-                    txt = ""
-                    while not self._log_queue[self._status['task_id']].empty():
-                        txt = self._log_queue[self._status['task_id']].get_nowait()
-                        self._log[self._status['task_id']] += txt
-                    self._log_sys_info()
-            else:
-                self._status['resource'] = self._condition_parse(resource)
-                if self._status['resource'] == 0:
-                    self._status['status'] = "WAIT RESOURCE"
-            if msg is not None:
-                log_info(msg)
-            if msg is None:
-                continue
-            elif msg['type'] == "RUN" and self._status['status'] != "RUNNING":
-                #self.p = Popen(msg['cmd'], shell=True, stdout = PIPE, stderr=PIPE, bufsize=0)
-                self._log_queue[msg['task_id']] = multiprocessing.Queue()
-                self.p = multiprocessing.Process(target = run_cmd, args = (prefix + msg['cmd'] + suffix, self._log_queue[msg['task_id']]))
-                self.p.start()
-                self._status['status'] = "RUNNING"
-                self._status['cmd'] = msg['cmd']
-                self._status['start_time'] = get_time()
-                self._status['task_id'] = msg['task_id']
-                self._status['node'] = get_node_name()
-                self._log[msg['task_id']] = ""
-            elif msg['type'] == "KILL":
-                if self._status['task_id'] == msg['task_id']:
-                    log_warn("Killing running task %d ." % self._status['task_id'])
-                    self._status['status'] = "KILLING"
-                    self._publish("to_server", self._make_worker_msg())
-                    kill_subs()
-                    log_warn("Task ", str(msg['task_id']), " has been killed.")
-                    log_info(msg)
-                    self._publish("to_server", self._make_worker_msg(type = 'WORKER_TASK_KILLED', task_id = self._status['task_id']))
-                    self._status = {"status" : "IDLE"}
-            elif msg['type'] == "REPORT":
-                res = eval(msg['cmd'])
-                self._publish("to_server", self._make_worker_msg(type = 'REPORT', res = res))
-            elif msg['type'] == "STDOUT":
-                txt = ""
-                while not self._log_queue[msg['task_id']].empty():
-                    txt = self._log_queue[msg['task_id']].get_nowait()
-                    self._log[msg['task_id']] += txt
-                lines = self._log[msg['task_id']].split('\n')
-                maxlen = 300
-                if len(lines) < maxlen:
-                    txt = self._log[msg['task_id']]
-                else:
-                    txt = '\n'.join(lines[:maxlen//2]) + "\n\n..........\n\n" + '\n'.join(lines[-maxlen//2:])
-                self._publish("to_server", self._make_worker_msg(type = 'STDOUT_RES', stdout_res = txt))
-    
-
-    def add(self, cmd):
-        self._publish("to_server", self._make_worker_msg(type = 'ADD', cmd = cmd, host = None))
-    """
 
     def add(self, cmd):
         """
