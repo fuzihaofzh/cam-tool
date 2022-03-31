@@ -84,7 +84,7 @@ def kill_subs():
     except Exception as e:
         return
 
-def run_cmd(cmd, log_queue):
+def run_cmd(cmd, log_queue, node_name, conf):
     try:
         proc = Popen(cmd, shell=True, stdout = PIPE, stderr=subprocess.STDOUT, bufsize=0)
         for content in proc.stdout:
@@ -93,6 +93,8 @@ def run_cmd(cmd, log_queue):
             log_queue.put(content)
     except Exception as e:
         return 
+    _redis = redis.StrictRedis(host=conf["server"], port=conf["port"], password=conf["password"], db=0, encoding="utf-8", decode_responses=True)
+    _redis.lpush(f"to_{node_name}", json.dumps({'type':'TASK_FINISHED', 'task_id' : -1}))
 
 
 
@@ -189,15 +191,16 @@ class CAM(object):
 
     def _get_message(self, timeout = 10):
         try:
-            self._update_node_status()
-            msg = self._watcher.get_message(timeout = timeout)
-            len_task_pending = self._redis.llen("task_pending")
             len_to_node = self._redis.llen(f"to_{get_node_name()}")
-            if msg == None and len_task_pending == 0 and len_to_node == 0:
-                return None
             if len_to_node != 0:
                 return json.loads(self._redis.rpop(f"to_{get_node_name()}"))
-            if len_task_pending != 0 and not self._node_status["node_status"] in ["RUNNING", "WAIT RESOURCE"]:
+            msg = self._watcher.get_message(timeout = timeout)
+            len_task_pending = self._redis.llen("task_pending")
+            if msg == None:
+                self._update_node_status()
+            if msg == None and len_task_pending == 0 and len_to_node == 0:
+                return None
+            if len_task_pending != 0 and not self._node_status["node_status"] in ["RUNNING", "WAIT RESOURCE", "WAIT LOCK"]:
                 node_list = self._get_hlist("node_list")
                 prior = [e for e in node_list if node_list[e]["node_status"] in ["IDLE", "FINISHED"] and node_list[e]["priority"] > self._node_status["priority"]]
                 if len(prior) > 0:
@@ -218,8 +221,22 @@ class CAM(object):
                 self._server_fails = True
             return None
 
+    def _handle_task_finished(self):
+        self._node_status['task']['end_time'] = get_time()
+        self._node_status['task']['status'] = "FINISHED"
+        self._node_status['node_status'] = "FINISHED"
+        self._hset("task_finished", self._node_status['task']['task_id'], self._node_status['task'])
+        self._redis.hdel("task_running", self._node_status['task']['task_id'])
+        self._update_node_status()
+        txt = ""
+        while not self._log_queue[self._node_status['task']['task_id']].empty():
+            txt = self._log_queue[self._node_status['task']['task_id']].get_nowait()
+            self._log[self._node_status['task']['task_id']] += txt
+        log_info(f"Finished running task {self._node_status['task']['task_id']}.")
+        self._log_sys_info()
+
     
-    def worker(self, resource=1, prefix="", priority=10, suffix = "", server = None, port = None, host_lock_time=30):
+    def worker(self, resource=1, prefix="", priority=10, suffix = "", server = None, port = None, host_lock_time=5):
         """
          Start the worker. 
         <br>`cam worker "some start condition"`
@@ -236,7 +253,7 @@ class CAM(object):
         if server is not None or port is not None:
             self._redis = redis.StrictRedis(host=self._conf["server"], port=self._conf["port"], password=self._conf["password"], db=0, encoding="utf-8")
         self._log_sys_info()
-        self._node_status = {"node" : get_node_name(), "host" : get_host_name(), "priority" : priority, "prefix": prefix, "suffix": suffix, "node_status" : "IDLE", "host_lock_time" : host_lock_time, "start_time": get_time()}
+        self._node_status = {"node" : get_node_name(), "host" : get_host_name(), "priority" : priority, "prefix": prefix, "suffix": suffix, "node_status" : "IDLE", "host_lock_time" : host_lock_time, "start_time": get_time(), "pwd" : os.getcwd(), "version" : __version__, "task" : {}}
         self._redis.config_set("notify-keyspace-events", "KEA")
         self._watcher = self._redis.pubsub()
         self._watcher.subscribe(["__keyspace@0__:task_pending", f"__keyspace@0__:to_{get_node_name()}"])
@@ -246,45 +263,36 @@ class CAM(object):
             msg = self._get_message()
             if self._node_status['node_status'] == "RUNNING":
                 if not self.p.is_alive():
-                    self._node_status['task']['end_time'] = get_time()
-                    self._node_status['task']['status'] = "FINISHED"
-                    self._node_status['node_status'] = "FINISHED"
-                    self._hset("task_finished", self._node_status['task']['task_id'], self._node_status['task'])
-                    self._redis.hdel("task_running", self._node_status['task']['task_id'])
-                    self._update_node_status()
-                    txt = ""
-                    while not self._log_queue[self._node_status['task']['task_id']].empty():
-                        txt = self._log_queue[self._node_status['task']['task_id']].get_nowait()
-                        self._log[self._node_status['task']['task_id']] += txt
-                    log_info(f"Finished running task {self._node_status['task']['task_id']}.")
-                    self._log_sys_info()
+                    self._handle_task_finished()
             if msg is None:
                 continue
             log_info(msg)
             if msg['type'] == 'RUN' and self._node_status['node_status'] != "RUNNING":
                 task = msg['task']
                 self._log_queue[task['task_id']] = multiprocessing.Queue()
-                self.p = multiprocessing.Process(target = run_cmd, args = (prefix + task['cmd'] + suffix, self._log_queue[task['task_id']]))
+                self.p = multiprocessing.Process(target = run_cmd, args = (prefix + task['cmd'] + suffix, self._log_queue[task['task_id']], get_node_name(), self._conf))
                 self.p.start()
-                task_status = {}
-                task_status['cmd'] = task['cmd']
-                task_status['start_time'] = get_time()
-                task_status['task_id'] = task['task_id']
-                task_status['node'] = get_node_name()
-                task_status['host'] = get_host_name()
-                task_status['status'] = "RUNNING"
+                task['start_time'] = get_time()
+                task['node'] = get_node_name()
+                task['host'] = get_host_name()
+                task['status'] = "RUNNING"
+                task['pwd'] = os.getcwd()
                 self._node_status['node_status'] = "RUNNING"
-                self._node_status['task'] = task_status
-                self._redis.hset('task_running', task_status['task_id'], json.dumps(task_status))
+                self._node_status['task'] = task
+                self._redis.hset('task_running', task['task_id'], json.dumps(task))
                 self._redis.hset("worker_lock", get_host_name(), get_time())
-                self._remove_by_tid("task_pending", task_status['task_id'])
+                self._remove_by_tid("task_pending", task['task_id'])
                 self._update_node_status()
                 self._log[task['task_id']] = ""
                 log_info(f"Start running task {self._node_status['task']['task_id']}.")
             if msg['type'] == 'KILL':
                 if msg['task_id'] == self._node_status['task']['task_id']:
-                    task =  json.loads(self._redis.hget("task_running", msg['task_id']))
+                    task = self._redis.hget("task_running", msg['task_id'])
+                    if task is None:
+                        continue
+                    task =  json.loads(task)
                     task['status'] = "KILLED"
+                    task['end_time'] = get_time()
                     self._hset("task_finished", msg['task_id'], task)
                     rrow = self._redis.hdel("task_running", msg['task_id'])
                     log_warn(f"Killing running task {msg['task_id']} .")
@@ -304,6 +312,8 @@ class CAM(object):
                 else:
                     txt = '\n'.join(lines[:maxlen//2]) + "\n\n..........\n\n" + '\n'.join(lines[-maxlen//2:])
                 self._redis.hset("task_log", msg['task_id'], txt)
+            elif msg['type'] == 'TASK_FINISHED':
+                self._handle_task_finished()
 
 
     def add(self, cmd):
@@ -326,6 +336,9 @@ class CAM(object):
         if prow is not None:
             log_warn(f"Task {rid} has been removed")
             log_warn(self._remove_by_tid("task_pending", rid))
+            prow['status'] = "CANCELED"
+            prow['end_time'] = get_time()
+            self._hset("task_finished", prow["task_id"], prow)
             return 
         task = json.loads(self._redis.hget("task_running", rid))
         if task is not None:
