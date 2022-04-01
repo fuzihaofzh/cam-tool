@@ -1,0 +1,6 @@
+include cam/web/*.json
+include cam/web/*.js
+include cam/web/server-middleware/*
+include cam/web/static/*
+include cam/web/plugins/*
+include cam/web/pages/*

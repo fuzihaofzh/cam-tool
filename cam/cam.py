@@ -25,7 +25,7 @@ CONFIG_FILE = "{0}/.cam.conf".format(HOME)
 DEFAULT_CONF="""server: 127.0.0.1
 port: 3857
 password: 0a8148539c426d7c008433172230b551
-host_lock_time: 60
+lock_time: 60
 """
 
 def get_time():
@@ -63,7 +63,7 @@ def log_warn(*args):
 def bash(cmd):
     return subprocess.getoutput(cmd)
 
-def ngpu(maxmem = 30):# Max used memory in Mb
+def ngpu(maxmem = 100):# Max used memory in Mb
     import GPUtil
     gpus = GPUtil.getGPUs()
     return len([g for g in gpus if g.memoryUsed < maxmem])
@@ -172,7 +172,7 @@ class CAM(object):
             pass
         elif self._node_status['resource'] <= 0:
             self._node_status['node_status'] = "WAIT RESOURCE"
-        elif self._check_host_lock(self._node_status['host_lock_time']):
+        elif self._check_host_lock(self._node_status['lock_time']):
             self._node_status['node_status'] = "WAIT LOCK"
         else:
             self._node_status['node_status'] = "IDLE"
@@ -193,7 +193,9 @@ class CAM(object):
         try:
             len_to_node = self._redis.llen(f"to_{get_node_name()}")
             if len_to_node != 0:
-                return json.loads(self._redis.rpop(f"to_{get_node_name()}"))
+                msg = self._redis.rpop(f"to_{get_node_name()}")
+                if msg is not None:
+                    return json.loads(msg)
             msg = self._watcher.get_message(timeout = timeout)
             len_task_pending = self._redis.llen("task_pending")
             if msg == None:
@@ -236,7 +238,7 @@ class CAM(object):
         self._log_sys_info()
 
     
-    def worker(self, resource=1, prefix="", priority=10, suffix = "", server = None, port = None, host_lock_time=5):
+    def worker(self, resource=1, prefix="", priority=10, suffix = "", server = None, port = None, lock_time=5):
         """
          Start the worker. 
         <br>`cam worker "some start condition"`
@@ -250,15 +252,21 @@ class CAM(object):
         """
         self._conf['server'] = server if server is not None else self._conf['server']
         self._conf['port'] = port if port is not None else self._conf['port']
-        if server is not None or port is not None:
-            self._redis = redis.StrictRedis(host=self._conf["server"], port=self._conf["port"], password=self._conf["password"], db=0, encoding="utf-8")
-        self._log_sys_info()
-        self._node_status = {"node" : get_node_name(), "host" : get_host_name(), "priority" : priority, "prefix": prefix, "suffix": suffix, "node_status" : "IDLE", "host_lock_time" : host_lock_time, "start_time": get_time(), "pwd" : os.getcwd(), "version" : __version__, "task" : {}}
-        self._redis.config_set("notify-keyspace-events", "KEA")
-        self._watcher = self._redis.pubsub()
-        self._watcher.subscribe(["__keyspace@0__:task_pending", f"__keyspace@0__:to_{get_node_name()}"])
-        self._resource_cond = resource
-        os.system("tmux rename-window cam%d"%os.getpid())
+        try:
+            if server is not None or port is not None:
+                self._redis = redis.StrictRedis(host=self._conf["server"], port=self._conf["port"], password=self._conf["password"], db=0, encoding="utf-8")
+            self._log_sys_info()
+            self._node_status = {"node" : get_node_name(), "host" : get_host_name(), "priority" : priority, "prefix": prefix, "suffix": suffix, "node_status" : "IDLE", "lock_time" : lock_time, "start_time": get_time(), "pwd" : os.getcwd(), "version" : __version__, "task" : {}}
+            self._redis.config_set("notify-keyspace-events", "KEA")
+            self._watcher = self._redis.pubsub()
+            self._watcher.subscribe(["__keyspace@0__:task_pending", f"__keyspace@0__:to_{get_node_name()}"])
+            self._resource_cond = resource
+            os.system("tmux rename-window cam%d"%os.getpid())
+            self._update_node_status()
+        except Exception as e:
+            print(e)
+            log_warn(f"Cannot connect to the server {self._conf['server']}:{self._conf['port']}")
+            exit(-1)
         while True:
             msg = self._get_message()
             if self._node_status['node_status'] == "RUNNING":
@@ -270,7 +278,8 @@ class CAM(object):
             if msg['type'] == 'RUN' and self._node_status['node_status'] != "RUNNING":
                 task = msg['task']
                 self._log_queue[task['task_id']] = multiprocessing.Queue()
-                self.p = multiprocessing.Process(target = run_cmd, args = (prefix + task['cmd'] + suffix, self._log_queue[task['task_id']], get_node_name(), self._conf))
+                task['cmd'] = prefix + task['cmd'] + suffix
+                self.p = multiprocessing.Process(target = run_cmd, args = (task['cmd'], self._log_queue[task['task_id']], get_node_name(), self._conf))
                 self.p.start()
                 task['start_time'] = get_time()
                 task['node'] = get_node_name()
@@ -372,6 +381,20 @@ class CAM(object):
         Edit the config file ~/.cam.conf
         """
         os.system("vim {0}".format(CONFIG_FILE))
+
+    def web(self, host = "127.0.0.1", port = 3257, rebuild = False):
+        """
+        Open a web panel.
+        Run `cam web --rebuild True` to rebuild the page.
+        """
+        log_info("Nodejs is required to run the web page.")
+        log_info("It is strongly suggested to run only on your local machine. NEVER run this on a public server!")
+        root = os.path.dirname(os.path.abspath(__file__))
+        if not os.path.exists(f"{root}/web/node_modules") or rebuild:
+            os.system(f"cd {root}/web && npm install")
+            os.system(f"cd {root}/web && npm run build")
+        os.system(f"cd {root}/web && HOST={host} PORT={port}  npm run start")
+
 
 def main():
     Cam = CAM()
