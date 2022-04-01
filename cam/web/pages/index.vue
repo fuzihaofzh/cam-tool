@@ -169,7 +169,6 @@ export default {
     }
   },
   async mounted () {
-    this.fetch_status()
     //setInterval(this.update_info, 1000);
     var conf = await fetch('/get_config').then(res => res.json());
     try {
@@ -181,6 +180,11 @@ export default {
       }
     } catch(err) {
       console.log(err);
+    }
+    await this.fetch_status()
+    for (var task of this.finishedTable.reverse().concat(this.runningTable.reverse())){
+      console.log(task)
+      this.history.push(task['cmd'])
     }
   },
   methods: {
