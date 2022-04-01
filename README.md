@@ -62,6 +62,6 @@ Cam tool provides a simple web console to add, kill, and watch tasks. Please ins
 ```
 cam web
 ```
-You can see the following user interface:
+Then open the link http://localhost:8257/ and you can see the following user interface:
 <img width="1349" alt="gui" src="https://user-images.githubusercontent.com/1419566/161306901-b5e417cb-1f55-4534-b272-636b29a0f754.png">
 
