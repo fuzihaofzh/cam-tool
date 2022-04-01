@@ -53,4 +53,8 @@ export default {
     transpile: [/^element-ui/],
   },
 
+  server: {
+    port: 8257 // default: 3000
+  }
+
 }

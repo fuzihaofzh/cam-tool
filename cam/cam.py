@@ -382,7 +382,7 @@ class CAM(object):
         """
         os.system("vim {0}".format(CONFIG_FILE))
 
-    def web(self, host = "127.0.0.1", port = 3257, rebuild = False):
+    def web(self, host = "127.0.0.1", port = 8257, rebuild = False):
         """
         Open a web panel.
         Run `cam web --rebuild True` to rebuild the page.
