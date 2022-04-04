@@ -72,7 +72,7 @@ def nsnode(*nodes):#Slurm Node Count
    return sum([bash('squeue').count(s) for s in nodes])
 
 def parse_json(data):
-    return json.loads(data)
+    return json.loads(data, strict=False)
 
 def kill_subs():
     parent = psutil.Process(os.getpid())
@@ -185,6 +185,17 @@ class CAM(object):
                 self._redis.hdel("node_list", node)
         self._hset("node_list", get_node_name(), self._node_status)
 
+    def _check_disconnected_task(self):
+        running = self._redis.hgetall("task_running")
+        node_list = self._get_hlist("node_list")
+        for tid in running:
+            task = json.loads(running[tid])
+            if task['node'] not in node_list:
+                task['end_time'] = get_time()
+                task['status'] = "DISCONNECTED"
+                self._hset("task_finished", task['task_id'], task)
+                self._redis.hdel("task_running", task['task_id'])
+
     def _get_hlist(self, hname):
         ptable = {k : json.loads(v) for k, v in self._redis.hgetall(hname).items()}
         return ptable
@@ -200,6 +211,7 @@ class CAM(object):
             len_task_pending = self._redis.llen("task_pending")
             if msg == None:
                 self._update_node_status()
+                self._check_disconnected_task()
             if msg == None and len_task_pending == 0 and len_to_node == 0:
                 return None
             if len_task_pending != 0 and not self._node_status["node_status"] in ["RUNNING", "WAIT RESOURCE", "WAIT LOCK"]:
@@ -238,7 +250,7 @@ class CAM(object):
         self._log_sys_info()
 
     
-    def worker(self, resource=1, prefix="", priority=10, suffix = "", server = None, port = None, lock_time=5):
+    def worker(self, resource=1, prefix="", priority=10, suffix = "", server = None, port = None, lock_time=20):
         """
          Start the worker. 
         <br>`cam worker "some start condition"`
@@ -265,6 +277,7 @@ class CAM(object):
             self._update_node_status()
         except Exception as e:
             print(e)
+            traceback.print_exc()
             log_warn(f"Cannot connect to the server {self._conf['server']}:{self._conf['port']}")
             exit(-1)
         while True:

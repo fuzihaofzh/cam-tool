@@ -182,7 +182,7 @@ export default {
       console.log(err);
     }
     await this.fetch_status()
-    for (var task of this.finishedTable.reverse().concat(this.runningTable.reverse())){
+    for (var task of this.finishedTable.reverse().concat(this.runningTable.reverse()).concat(this.pendingTable.reverse())){
       console.log(task)
       this.history.push(task['cmd'])
     }
@@ -261,6 +261,7 @@ export default {
     async input_keydown(event){
       if(event.key == 'Enter'){
         event.preventDefault()
+        this.cmd = this.cmd.replace('\t', '')
         var res = fetch(`/redis?type=run&cmd=${encodeURI(this.cmd)}`);
         if(this.cmd.length > 0) this.history.push(this.cmd);
         this.cmd = ""
