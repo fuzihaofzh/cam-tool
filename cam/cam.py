@@ -216,7 +216,7 @@ class CAM(object):
                 return None
             if len_task_pending != 0 and not self._node_status["node_status"] in ["RUNNING", "WAIT RESOURCE", "WAIT LOCK"]:
                 node_list = self._get_hlist("node_list")
-                prior = [e for e in node_list if node_list[e]["node_status"] in ["IDLE", "FINISHED"] and (node_list[e]["priority"] > self._node_status["priority"] or e > self._node_status["node"])]
+                prior = [e for e in node_list if node_list[e]["node_status"] in ["IDLE", "FINISHED"] and (node_list[e]["priority"] > self._node_status["priority"] or (e > self._node_status["node"] and node_list[e]['host'] == self._node_status['host']))]
                 if len(prior) > 0:
                     return None
                 task = self._redis.rpop("task_pending")
