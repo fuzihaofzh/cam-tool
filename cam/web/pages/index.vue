@@ -216,10 +216,11 @@ export default {
       this.finishedStr = `Finished(${this.finishedTable.length})`
       this.nodesTable = get_table(status['nodes'])
       this.nodesStr = `Nodes(${this.nodesTable.length})`
-      this.hosts = [""]
+      var hosts = new Set()
       for (var node of this.nodesTable){
-        this.hosts.push(node['host']);
+        hosts.add(node['host']);
       }
+      this.hosts = [...hosts]
     },
     async kill_task(task_id, host = ""){
       await fetch(`/redis?type=kill&tid=${task_id}&host=${host}`);
