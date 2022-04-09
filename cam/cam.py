@@ -181,7 +181,10 @@ class CAM(object):
         now = datetime.datetime.utcnow()
         for node in node_list:
             dt = datetime.datetime.fromisoformat(node_list[node]['timestamp'])
-            if (now - dt).seconds > 300:
+            if 300 >= (now - dt).seconds > 30:
+                node_list[node]['node_status'] = "DISCONNECTED"
+                self._hset("node_list", node, node_list[node])
+            elif (now - dt).seconds > 300:
                 self._redis.hdel("node_list", node)
         self._hset("node_list", get_node_name(), self._node_status)
 
@@ -209,21 +212,29 @@ class CAM(object):
                     return json.loads(msg)
             msg = self._watcher.get_message(timeout = timeout)
             len_task_pending = self._redis.llen("task_pending")
+            len_task_pending_node = self._redis.llen(f"task_pending_{get_host_name()}")
             if msg == None:
                 self._update_node_status()
                 self._check_disconnected_task()
-            if msg == None and len_task_pending == 0 and len_to_node == 0:
+            if msg == None and len_task_pending == 0 and len_task_pending_node == 0 and len_to_node == 0:
                 return None
-            if len_task_pending != 0 and not self._node_status["node_status"] in ["RUNNING", "WAIT RESOURCE", "WAIT LOCK"]:
-                node_list = self._get_hlist("node_list")
-                prior = [e for e in node_list if node_list[e]["node_status"] in ["IDLE", "FINISHED"] and (node_list[e]["priority"] > self._node_status["priority"] or (e > self._node_status["node"] and node_list[e]['host'] == self._node_status['host']))]
-                if len(prior) > 0:
-                    return None
-                task = self._redis.rpop("task_pending")
-                if task is None:
-                    return None
-                task = json.loads(task)
-                return {"type" : "RUN", "task" : task}
+            if len_task_pending + len_task_pending_node != 0 and not self._node_status["node_status"] in ["RUNNING", "WAIT RESOURCE", "WAIT LOCK"]:
+                with self._redis.lock('pending_lock'):
+                    #pending_s = self._redis.lrange("task_pending", 0, -1)
+                    #pending = [json.loads(d) for d in pending_s]
+                    node_list = self._get_hlist("node_list")
+                    prior = [e for e in node_list if node_list[e]["node_status"] in ["IDLE", "FINISHED"] and (node_list[e]["priority"] > self._node_status["priority"] or (e > self._node_status["node"] and node_list[e]['host'] == self._node_status['host']))]
+                    if len(prior) > 0 and len_task_pending_node == 0:
+                        return None
+                    task = self._redis.rpop(f"task_pending_{get_host_name()}") or self._redis.rpop("task_pending")
+                    if task is None:
+                        return None
+                    try: # debug
+                        task = json.loads(task)
+                    except:
+                        print("task str:", task)
+                    self._redis.hset("worker_lock", get_host_name(), get_time())
+                    return {"type" : "RUN", "task" : task}
             if self._server_fails:
                 self._log_sys_info()
                 log_info("Connection Recovered!")
@@ -271,7 +282,7 @@ class CAM(object):
             self._node_status = {"node" : get_node_name(), "host" : get_host_name(), "priority" : priority, "prefix": prefix, "suffix": suffix, "node_status" : "IDLE", "lock_time" : lock_time, "start_time": get_time(), "pwd" : os.getcwd(), "version" : __version__, "task" : {}}
             self._redis.config_set("notify-keyspace-events", "KEA")
             self._watcher = self._redis.pubsub()
-            self._watcher.subscribe(["__keyspace@0__:task_pending", f"__keyspace@0__:to_{get_node_name()}"])
+            self._watcher.subscribe(["__keyspace@0__:task_pending", f"__keyspace@0__:to_{get_node_name()}", f"__keyspace@0__:task_pending_{get_host_name()}"])
             self._resource_cond = resource
             os.system("tmux rename-window cam%d"%os.getpid())
             self._update_node_status()
@@ -304,6 +315,7 @@ class CAM(object):
                 self._redis.hset('task_running', task['task_id'], json.dumps(task))
                 self._redis.hset("worker_lock", get_host_name(), get_time())
                 self._remove_by_tid("task_pending", task['task_id'])
+                self._remove_by_tid(f"task_pending_{get_node_name()}", task['task_id'])
                 self._update_node_status()
                 self._log[task['task_id']] = ""
                 log_info(f"Start running task {self._node_status['task']['task_id']}.")
@@ -338,14 +350,19 @@ class CAM(object):
                 self._handle_task_finished()
 
 
-    def add(self, cmd):
+    def add(self, cmd, host = None):
         """
         Add a new task.
         """
         node_list = self._get_hlist("node_list")
         tcnt = int(self._redis.get('jobid') or 0)
         tid = max([node_list[n]["task"]['task_id'] for n in node_list if "task" in node_list[n] and "task_id" in node_list[n]["task"]] + [tcnt]) + 1
-        self._redis.lpush("task_pending", json.dumps({"cmd" : cmd, "submit_time" : get_time(), "task_id" : tid}))
+        task = {"cmd" : cmd, "submit_time" : get_time(), "task_id" : tid}
+        if host is not None:
+            task['host'] = host
+            self._redis.lpush(f"task_pending_{host}", json.dumps(task))
+        else:
+            self._redis.lpush("task_pending", json.dumps(task))
         log_info(f"New Task: {tid}")
         self._redis.set('jobid', f"{tid}")
 
@@ -358,6 +375,7 @@ class CAM(object):
         if prow is not None:
             log_warn(f"Task {rid} has been removed")
             log_warn(self._remove_by_tid("task_pending", rid))
+            self._remove_by_tid(f"task_pending_{get_node_name()}", rid)
             prow['status'] = "CANCELED"
             prow['end_time'] = get_time()
             self._hset("task_finished", prow["task_id"], prow)

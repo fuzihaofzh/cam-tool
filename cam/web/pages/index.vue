@@ -1,12 +1,24 @@
 <template>
 <div>
+<nobr>
 <el-input
   type="textarea"
   :autosize="{ maxRows: 1}"
   resize="none"
   @keydown.native="input_keydown"
+  style="width: 70%;"
   v-model="cmd">
 </el-input>
+<el-select v-model="sel_host" placeholder="All Nodes">
+    <el-option
+      v-for="item in hosts"
+      :key="item"
+      :label="item"
+      :value="item"
+      >
+    </el-option>
+  </el-select>
+</nobr>
 <el-tabs @tab-click="fetch_status" value="nodes">
     <el-tab-pane :label="pendingStr" name="pending">
       <el-table :data="pendingTable" style="width: 100%">
@@ -14,8 +26,8 @@
           <template slot-scope="table">
             <span v-html="table.row.task_id" :class="'bold'"/>
             <span v-html="table.row.status" :class="status_color[table.row.status]"/>
-             <el-button type="danger" icon="el-icon-close" size="mini" @click="kill_task(table.row.task_id)"></el-button>
-            <span v-html="table.row.cmd"/>
+             <el-button type="danger" icon="el-icon-close" size="mini" @click="kill_task(table.row.task_id, table.row.host)"></el-button>
+            <span v-html="table.row.cmd+'&nbsp;&nbsp;&nbsp;&nbsp;'+table.row.host"/>
             <br>
             <span v-html="table.row.submit_time+'&nbsp;&nbsp;&nbsp;&nbsp;'+table.row.duration"/>
           </template>
@@ -165,7 +177,9 @@ export default {
       task_node : {},
       cmd: "",
       history: [],
-      history_id: null
+      history_id: null,
+      hosts: [""],
+      sel_host: ""
     }
   },
   async mounted () {
@@ -183,7 +197,6 @@ export default {
     }
     await this.fetch_status()
     for (var task of this.finishedTable.reverse().concat(this.runningTable.reverse()).concat(this.pendingTable.reverse())){
-      console.log(task)
       this.history.push(task['cmd'])
     }
   },
@@ -203,9 +216,13 @@ export default {
       this.finishedStr = `Finished(${this.finishedTable.length})`
       this.nodesTable = get_table(status['nodes'])
       this.nodesStr = `Nodes(${this.nodesTable.length})`
+      this.hosts = [""]
+      for (var node of this.nodesTable){
+        this.hosts.push(node['host']);
+      }
     },
-    async kill_task(task_id){
-      await fetch(`/redis?type=kill&tid=${task_id}`);
+    async kill_task(task_id, host = ""){
+      await fetch(`/redis?type=kill&tid=${task_id}&host=${host}`);
     },
     async on_expand_change(row, expandedRows){
       if ('task' in row){
@@ -262,9 +279,13 @@ export default {
       if(event.key == 'Enter'){
         event.preventDefault()
         this.cmd = this.cmd.replace('\t', '')
-        var res = fetch(`/redis?type=run&cmd=${encodeURI(this.cmd)}`);
+        var res = fetch(`/redis?type=run&cmd=${encodeURI(this.cmd)}&host=${this.sel_host}`);
         if(this.cmd.length > 0) this.history.push(this.cmd);
         this.cmd = ""
+        if(this.sel_host != ""){
+          await setTimeout(function(){},1000);
+          this.fetch_status()
+        }
       }else if(event.key == 'ArrowUp'){
         this.history_id = this.history_id == null ? this.history.length - 1 : this.history_id - 1;
         this.history_id = (this.history_id < 0 ? this.history_id + this.history.length : this.history_id);
