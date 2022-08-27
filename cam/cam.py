@@ -219,8 +219,9 @@ class CAM(object):
                 self._check_disconnected_task()
             if msg == None and len_task_pending == 0 and len_task_pending_node == 0 and len_to_node == 0:
                 return None
-            if len_task_pending + len_task_pending_node != 0 and not self._node_status["node_status"] in ["RUNNING", "WAIT RESOURCE", "WAIT LOCK"]:
-                with self._redis.lock('pending_lock'):
+            with self._redis.lock('pending_lock'):
+                self._update_node_status()
+                if len_task_pending + len_task_pending_node != 0 and not self._node_status["node_status"] in ["RUNNING", "WAIT RESOURCE", "WAIT LOCK"]:
                     #pending_s = self._redis.lrange("task_pending", 0, -1)
                     #pending = [json.loads(d) for d in pending_s]
                     node_list = self._get_hlist("node_list")
@@ -340,8 +341,8 @@ class CAM(object):
                 while not self._log_queue[msg['task_id']].empty():
                     txt = self._log_queue[msg['task_id']].get_nowait()
                     self._log[msg['task_id']] += txt
-                lines = self._log[msg['task_id']].strip().split('\n')
-                lines = [lines[i] for i in range(len(lines)) if SequenceMatcher(None, lines[i - 1], lines[i]).ratio() < 0.9 or i == 0 or i == len(lines) - 1]
+                lines = self._log[msg['task_id']].strip().replace("\r", "\n").split('\n')
+                lines = [lines[i] for i in range(len(lines)) if (SequenceMatcher(None, lines[i - 1], lines[i]).ratio() < 0.8 or i == 0 or i == len(lines) - 1) and (len(lines[i]) > 0)]
                 maxlen = 600
                 if len(lines) < maxlen:
                     txt = "\n".join(lines)
