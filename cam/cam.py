@@ -20,6 +20,7 @@ import datetime
 import errno
 import functools
 import traceback
+from difflib import SequenceMatcher
 HOME = str(Path.home())
 CONFIG_FILE = "{0}/.cam.conf".format(HOME)
 DEFAULT_CONF="""server: 127.0.0.1
@@ -181,10 +182,10 @@ class CAM(object):
         now = datetime.datetime.utcnow()
         for node in node_list:
             dt = datetime.datetime.fromisoformat(node_list[node]['timestamp'])
-            if 300 >= (now - dt).seconds > 30:
+            if 1200 >= (now - dt).seconds > 60:
                 node_list[node]['node_status'] = "DISCONNECTED"
                 self._hset("node_list", node, node_list[node])
-            elif (now - dt).seconds > 300:
+            elif (now - dt).seconds > 1200:
                 self._redis.hdel("node_list", node)
         self._hset("node_list", get_node_name(), self._node_status)
 
@@ -339,10 +340,11 @@ class CAM(object):
                 while not self._log_queue[msg['task_id']].empty():
                     txt = self._log_queue[msg['task_id']].get_nowait()
                     self._log[msg['task_id']] += txt
-                lines = self._log[msg['task_id']].split('\n')
-                maxlen = 300
+                lines = self._log[msg['task_id']].strip().split('\n')
+                lines = [lines[i] for i in range(len(lines)) if SequenceMatcher(None, lines[i - 1], lines[i]).ratio() < 0.9 or i == 0 or i == len(lines) - 1]
+                maxlen = 600
                 if len(lines) < maxlen:
-                    txt = self._log[msg['task_id']]
+                    txt = "\n".join(lines)
                 else:
                     txt = '\n'.join(lines[:maxlen//2]) + "\n\n..........\n\n" + '\n'.join(lines[-maxlen//2:])
                 self._redis.hset("task_log", msg['task_id'], txt)

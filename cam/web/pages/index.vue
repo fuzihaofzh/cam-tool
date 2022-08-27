@@ -197,7 +197,11 @@ export default {
     }
     await this.fetch_status()
     for (var task of this.finishedTable.reverse().concat(this.runningTable.reverse()).concat(this.pendingTable.reverse())){
-      this.history.push(task['cmd'])
+      var prefix = "";
+      if (this.nodesDict[task['node']] != null){
+        prefix = this.nodesDict[task['node']]['prefix'];
+      }
+      this.history.push(task['cmd'].replace(prefix, ""))
     }
   },
   methods: {
@@ -215,6 +219,7 @@ export default {
       this.finishedTable = get_table(status['finished'])
       this.finishedStr = `Finished(${this.finishedTable.length})`
       this.nodesTable = get_table(status['nodes'])
+      this.nodesDict = Object.assign({}, ...this.nodesTable.map((x) => ({[x.node]: x})));
       this.nodesStr = `Nodes(${this.nodesTable.length})`
       var hosts = new Set()
       for (var node of this.nodesTable){
