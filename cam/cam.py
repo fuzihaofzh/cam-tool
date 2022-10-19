@@ -189,7 +189,7 @@ class CAM(object):
                 self._redis.hdel("node_list", node)
         self._hset("node_list", get_node_name(), self._node_status)
 
-    def _check_disconnected_task(self):
+    def _check_running_tasks(self):
         running = self._redis.hgetall("task_running")
         node_list = self._get_hlist("node_list")
         for tid in running:
@@ -199,6 +199,11 @@ class CAM(object):
                 task['status'] = "DISCONNECTED"
                 self._hset("task_finished", task['task_id'], task)
                 self._redis.hdel("task_running", task['task_id'])
+            # If my runing task was set to DISCONNECTED by others
+            if task['task_id'] == self._node_status['task']['task_id'] and self._node_status['node_status'] == "RUNNING" and task['status'] == "DISCONNECTED":
+                task['status'] = "RUNNING"
+                self._hset("task_running", task['task_id'], task)
+                self._redis.hdel("task_finished", task['task_id'])
 
     def _get_hlist(self, hname):
         ptable = {k : json.loads(v) for k, v in self._redis.hgetall(hname).items()}
@@ -216,7 +221,7 @@ class CAM(object):
             len_task_pending_node = self._redis.llen(f"task_pending_{get_host_name()}")
             if msg == None:
                 self._update_node_status()
-                self._check_disconnected_task()
+                self._check_running_tasks()
             if msg == None and len_task_pending == 0 and len_task_pending_node == 0 and len_to_node == 0:
                 return None
             with self._redis.lock('pending_lock'):
