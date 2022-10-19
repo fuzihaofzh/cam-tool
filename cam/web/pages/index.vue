@@ -6,7 +6,7 @@
   :autosize="{ maxRows: 1}"
   resize="none"
   @keydown.native="input_keydown"
-  style="width: 70%;"
+  style="width: 80%;"
   v-model="cmd">
 </el-input>
 <el-select v-model="sel_host" placeholder="All Nodes">

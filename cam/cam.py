@@ -192,6 +192,7 @@ class CAM(object):
     def _check_running_tasks(self):
         running = self._redis.hgetall("task_running")
         node_list = self._get_hlist("node_list")
+        foundMyTask = False
         for tid in running:
             task = json.loads(running[tid])
             if task['node'] not in node_list:
@@ -200,10 +201,11 @@ class CAM(object):
                 self._hset("task_finished", task['task_id'], task)
                 self._redis.hdel("task_running", task['task_id'])
             # If my runing task was set to DISCONNECTED by others
-            if task['task_id'] == self._node_status['task']['task_id'] and self._node_status['node_status'] == "RUNNING" and task['status'] == "DISCONNECTED":
-                task['status'] = "RUNNING"
-                self._hset("task_running", task['task_id'], task)
-                self._redis.hdel("task_finished", task['task_id'])
+            if 'task_id' in self._node_status['task'] and task['task_id'] == self._node_status['task']['task_id']:
+                foundMyTask = True
+        if not foundMyTask and self._node_status['node_status'] == "RUNNING":
+            self._hset('task_running', self._node_status['task']['task_id'], self._node_status['task'])
+            self._redis.hdel("task_finished", self._node_status['task']['task_id'])
 
     def _get_hlist(self, hname):
         ptable = {k : json.loads(v) for k, v in self._redis.hgetall(hname).items()}
