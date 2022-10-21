@@ -182,7 +182,7 @@ class CAM(object):
         now = datetime.datetime.utcnow()
         for node in node_list:
             dt = datetime.datetime.fromisoformat(node_list[node]['timestamp'])
-            if 1200 >= (now - dt).seconds > 60:
+            if 1200 >= (now - dt).seconds > 300:
                 node_list[node]['node_status'] = "DISCONNECTED"
                 self._hset("node_list", node, node_list[node])
             elif (now - dt).seconds > 1200:
