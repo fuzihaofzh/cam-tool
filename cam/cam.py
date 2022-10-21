@@ -226,7 +226,7 @@ class CAM(object):
                 self._check_running_tasks()
             if msg == None and len_task_pending == 0 and len_task_pending_node == 0 and len_to_node == 0:
                 return None
-            with self._redis.lock('pending_lock'):
+            with self._redis.lock('pending_lock', timeout = 60):
                 self._update_node_status()
                 if len_task_pending + len_task_pending_node != 0 and not self._node_status["node_status"] in ["RUNNING", "WAIT RESOURCE", "WAIT LOCK"]:
                     #pending_s = self._redis.lrange("task_pending", 0, -1)
