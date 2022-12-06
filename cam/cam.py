@@ -21,6 +21,7 @@ import errno
 import functools
 import traceback
 from difflib import SequenceMatcher
+import GPUtil
 HOME = str(Path.home())
 CONFIG_FILE = "{0}/.cam.conf".format(HOME)
 DEFAULT_CONF="""server: 127.0.0.1
@@ -65,7 +66,6 @@ def bash(cmd):
     return subprocess.getoutput(cmd)
 
 def ngpu(maxmem = 100):# Max used memory in Mb
-    import GPUtil
     gpus = GPUtil.getGPUs()
     return len([g for g in gpus if g.memoryUsed < maxmem])
 
@@ -435,6 +435,17 @@ class CAM(object):
             os.system(f"cd {root}/web && npm install")
             os.system(f"cd {root}/web && npm run build")
         os.system(f"cd {root}/web && HOST={host} PORT={port}  npm run start")
+
+    def version(self):
+        print(__version__)
+
+    def ngpu(self, maxmem = 100):# Max used memory in Mb
+        return ngpu(maxmem)
+
+    def nsnode(self, *nodes):#Slurm Node Count
+        return nsnode(*nodes)
+
+    
 
 
 def main():
